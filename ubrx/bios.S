@@ -166,6 +166,11 @@ AMD_SB_PM_DATA   = 0xCD7
 9:	# see http://sourceware.org/binutils/docs-2.21/as/Symbol-Names.html
 .endm
 
+# Fixes a binutil/ld bug where the address if off by 2 on cross section jumps
+.macro  JMP_XS addr
+	jmp  \addr + 2
+.endm
+
 # Read current super I/O base from data section (global pointer in MM0)
 .macro  GET_SUPERIO_BASE
 .ifdef SUPERIO_BASE
@@ -257,7 +262,7 @@ AMD_SB_PM_DATA   = 0xCD7
 
 /********************************************************************************/
 /* main:                                                                        */
-/* This section will be relocated according to the bios.ld script.              */
+/* This section is relocated according to the ld script.                        */
 /********************************************************************************/
 # TODO (if reports of inactive UART LDs): PnP register 22 & power on function
 
@@ -518,15 +523,7 @@ vm_restore:
 
 enter_panic:
 	DIAG 0x80
-print_hello:			# Print a string
-	mov  si, offset hello_string
-	ROM_CALL print_string
-
-serial_repeater:		# For now the "console" is a simple serial repeater
-	mov  cx, 0
-	ROM_CALL readchar
-	ROM_CALL putchar
-	jmp  serial_repeater
+	JMP_XS enter_console
 
 # TODO: proceed to booting normal BIOS
 halt:
@@ -598,14 +595,14 @@ lpc_amd:
 	out  dx, al
 	
 	mov  ax, SB800_MMIO_PAGE	# Set our base page
-	mov  ds, ax
+	mov  es, ax
 	mov  di, 0xe00 + 0x40		# Misc. Registers: MiscClkCntrl
 	mov  al, [di]
 	and  al, 0xf8
 	or   al, 0x02			# Enable and set Device_CLK1 (Super I/O) to 48 Mhz
 	mov  [di], al
-	mov  ax, cs			# restore ds
-	mov  ds, ax
+#	mov  ax, cs			# restore ds
+#	mov  es, ax
 .endif
 	jmp  sp
 lpc_intel:
@@ -682,6 +679,7 @@ write_serial_conf:
 # Print a character to serial output
 # IN: AL = character to output
 # OUT: none
+.globl putchar
 putchar:
 	mov  dx, COM_BASE + COM_LSR
 	mov  ah, al
@@ -699,6 +697,7 @@ tx_wait:
 # Read a serial char with timeout. Wait indefinitely if timeout = 0.
 # IN: CX = timeout in ~1 ms (+/- ~1 ms => MUST be at least 2)
 # OUT: AX = character read from serial, or 0xFFFF if timeout
+.globl readchar
 readchar:
 	xor  ax, ax
 	mov  dx, RTC_ADDRESS
@@ -784,7 +783,8 @@ wait_timer:
 
 # MODIFIES: DX, AX
 # Print a NUL terminated string to serial
-# IN: SI = offset to NUL terminated string    
+# IN: SI = offset to NUL terminated string
+.globl print_string
 print_string:
 	PUSH_SP
 next_char:
@@ -801,12 +801,13 @@ ps_exit:
 # Print an hex longword to serial
 # IN: EAX = longword to print in hex
 # OUT: none
+.globl print_hex
 print_hex:
 	PUSH_SP
 	mov  ebx, eax
-	mov  al, '0'
+	mov  al, ' '
 	ROM_CALL putchar
-	mov  al, 'x'
+	mov  al, '$'
 	ROM_CALL putchar
 	mov  cx, 8
 one_digit:
@@ -1171,8 +1172,6 @@ serial_conf:			# See http://www.versalogic.com/kb/KB.asp?KBID=1395
 	.byte COM_LCR, 0x03	# Unset DLAB. Set 8N1 mode
 	.byte COM_FCR, 0x07	# Enable & reset FIFOs. DMA mode 0.
 serial_conf_end:
-hello_string:
-	.string "\r\nubrx> "	# automatically NUL terminated
 /********************************************************************************/
 
 
@@ -1180,7 +1179,6 @@ hello_string:
 /* reset: this section must reside at 0xfffffff0, and be exactly 16 bytes       */
 /********************************************************************************/
 .section reset, "ax"
-	.byte  0xe9		# work around a binutils bug.
-	.int   init - ( . + 2 )
+	JMP_XS init		# When jumping between sections, ld is off by 2
 	.align 16, 0xff		# fill section up to end of ROM (with 0xFF)
 /********************************************************************************/
