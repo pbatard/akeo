@@ -72,10 +72,11 @@ TEST_EXTRA_PORTS = 1	# Test additional Super I/O ports beside 0x2E & 0x4E
 #SUPERIO_TYPE     = 2	# 0 = NS, 1 = SMSC, 2 = VIA/Winbond/Nuvoton/Fintek,
 			# 3 = Intel, 4 = ITE
 
-# AMD SB8x0 extra build options (TODO: conditional SB800 detection)
+# AMD SBxx0 extra build options (TODO: conditional SB detection)
 SB800_48MHZ_INIT = 0	# Set to 1 to force 48 MHz clock init of AMD SB8x0 SouthBridge
-			# NOTE: ONLY DO SO IF YOU KNOW WHAT YOU ARE DOING
-SB800_MMIO_PAGE  = 0x8000	# Page to map SB8x0 MMIO 
+SB900_48MHZ_INIT = 0	# Set to 1 to force 48 MHz clock init of AMD SB9x0 SouthBridge
+			# NOTE: ONLY USE THE ABOVE IF YOU KNOW WHAT YOU ARE DOING
+SB800_MMIO_PAGE  = 0x8000	# Page to map SB8x0/SB9x0 MMIO 
 
 
 /********************************************************************************/
@@ -259,7 +260,7 @@ AMD_SB_PM_DATA   = 0xCD7
 /* This allows the .rom binary to be filled to the right size with objcopy.     */
 /********************************************************************************/
 .section begin, "a"			# The 'ALLOC' flag is needed for objcopy
-	.ascii "UBRX v0.1"
+	.ascii "UBRX v0.2"
 	.align 16, 0xff
 /********************************************************************************/
 
@@ -412,6 +413,8 @@ test_ldn:
 
 	# Passed the 2 extra safety test => proceed with full Super I/O and panic test
 	PUSHX cl
+	dec  dx
+	ROM_CALL xt_init	# Some PnP chips require extra init
 	ROM_CALL check_pnp_superio
 	POPX cl
 	mov  ah, al		# keep a copy of our return value in AH
@@ -560,7 +563,7 @@ lpc_amd:
 	PCI_CONF_OUT32 0, 0x14, 3, 0x44, AMD_SB_IO
 	PCI_CONF_OUT32 0, 0x14, 3, 0x48, 0x0000ff03	# 0x2E/0x4E forwarding, everything else disabled
 
-.if SB800_48MHZ_INIT	# Force SB8x0 48 MHz on clk1 (DOES NOT CHECK FOR SB8x0!)
+.if SB800_48MHZ_INIT | SB900_48MHZ_INIT	# Force 48 MHz clock init (/!\ DOES NOT CHECK FOR VALID SB)
 	# We have the choice of switching to 32 bit, to use the MMIO default base of 0xFED80000
 	# or change this base to a 20 bit address (real-mode). We choose the latter
 	mov  dx, AMD_SB_PM_ADDR
@@ -594,19 +597,26 @@ lpc_amd:
 	out  dx, al
 	inc  dx
 	in   al, dx
-	or   al, 0x01			# enable AcpiMMio space
-	and  al, 0xfd			# disable I/O-mapped space, use Memory-mapped instead
+	or   al,  (1 << 0)		# enable AcpiMMio space
+	and  al, ~(1 << 1)		# disable I/O-mapped space, use Memory-mapped instead
 	out  dx, al
 	
 	mov  ax, SB800_MMIO_PAGE	# Set our base page
-	mov  es, ax
+	mov  es, ax			# ES does not need to be restored
 	mov  di, 0xe00 + 0x40		# Misc. Registers: MiscClkCntrl
 	mov  al, [di]
 	and  al, 0xf8
 	or   al, 0x02			# Enable and set Device_CLK1 (Super I/O) to 48 Mhz
 	mov  [di], al
-#	mov  ax, cs			# restore ds
-#	mov  es, ax
+# TODO: SB900 vs SB800 detection
+.if SB900_48MHZ_INIT
+ 	# Program ClkDrvSth2 OSCOUT1_CLK_sel for 48 MHz (default is 14 MHz)
+	mov  di, 0xe00 + 0x28
+	mov  eax, [di]
+	and  eax, ~(7 << 16)
+	or   eax,  (2 << 16)
+	mov  [di], eax
+.endif
 .endif
 	jmp  sp
 lpc_intel:
@@ -831,6 +841,62 @@ alpha:
 	ROM_CALL putchar
 	mov  eax, ebx
 	POP_SP
+	jmp  sp
+
+# MODIFIES: AX, EBX, CX, DX, SI
+# Peforms extra initialization for PnP Super I/Os that require it
+# IN: DX = Super I/O base
+# OUT: none
+xt_init:
+	DIAG 0x76
+	mov  al, PNP_ID
+	out  dx, al
+	IO_DELAY
+	inc  dx
+	in   al, dx
+	shl  ax, 0x08
+	dec  dx
+	mov  al, PNP_ID+1
+	out  dx, al
+	IO_DELAY
+	inc  dx
+	in   al, dx
+	mov  cx, ax		# CX  = 2 byte chip ID
+	mov  si, offset special_init
+xti_chip:
+	mov  ebx, [si]		# read both the mask and ID at once
+	add  si, 4
+	mov  ax, cx
+	and  ax, bx		# apply mask
+	shr  ebx, 0x10
+	cmp  ax, bx		# compare with ID
+	je   xti_match
+0:	add  si, 3		# skip data section
+	mov  al, [si]
+	cmp  al, 0xff		# end of section marker
+	jne  0b
+	inc  si
+	cmp  si, offset special_init_end
+	jne  xti_chip
+	jmp  sp
+xti_match:
+	DIAG 0x77
+	mov  al, [si]
+	dec  dx
+	out  dx, al
+	inc  dx
+	inc  si
+	mov  ah, [si]
+	inc  si
+	in   al, dx
+	and  al, ah
+	mov  ah, [si]
+	inc  si
+	or   al, ah
+	out  dx, al
+	mov  al, [si]
+	cmp  al, 0xff
+	jne  xti_match
 	jmp  sp
 
 # MODIFIES: EAX, EBX, ECX, EDX
@@ -1176,6 +1242,23 @@ serial_conf:			# See http://www.versalogic.com/kb/KB.asp?KBID=1395
 	.byte COM_LCR, 0x03	# Unset DLAB. Set 8N1 mode
 	.byte COM_FCR, 0x07	# Enable & reset FIFOs. DMA mode 0.
 serial_conf_end:
+# Extra configuration for PnP chip that require it
+special_init:
+	# WinBond W83977TF (testing)
+#	.word 0xffff		# PnP chip ID mask
+#	.word 0x9773		# PnP chip ID (big endian format: [0x20][0x21])
+#	.byte 0x22		# PnP register index
+#	.byte 0xfe		# AND mask to apply (clear bits - here, clear bit 0)
+#	.byte 0x30		# OR value to apply (set bits - here, set bits 4&5)
+#	.byte 0xff		# end of section
+	# The Nuvoton NCT6776F defaults with Serial A & B disabled => enable them
+	.word 0xffff
+	.word 0xc333		# NCT6776F chip ID
+	.byte 0x2a		# Multi Function Selection register
+	.byte 0x1f		# bit 7, 6 & 5 cleared => Serial A & B enabled
+	.byte 0x00
+	.byte 0xff		# end of section
+special_init_end:
 /********************************************************************************/
 
 
