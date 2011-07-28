@@ -18,7 +18,7 @@
 /*                                                                              */
 /********************************************************************************/
 
-.include "mmx_stack.inc"
+
 /********************************************************************************/
 /* GNU Assembler Settings:                                                      */
 /********************************************************************************/
@@ -26,11 +26,19 @@
 .code16			# After reset, the x86 CPU is in real/16 bit mode
 /********************************************************************************/
 
+.include "config.inc"
+# Can't use external defined macros into an include... :(
+JMP_WORKAROUND_INC = JMP_WORKAROUND
+.include "macros.inc"	# Always make sure config is included before macros
+
+
 /********************************************************************************/
 /* Constants:                                                                   */
 /********************************************************************************/
+# Script/setup mode commands
 OP_DUMP_ACC       = '?'
 OP_MOVE_IMM       = '$'
+OP_DIVISOR        = '/'
 OP_WRMSR          = 'm'
 OP_RDMSR          = 'M'
 OP_CPUID          = '#'
@@ -42,39 +50,25 @@ OP_ACC_TO_PORT    = 'p'		# "pqr" [70-72]
 OP_PORT_TO_ACC    = 'P'		# "PQR" [50-52]
 OP_ACC_TO_MEM     = 'x'		# "xyz" [78-7A]
 OP_MEM_TO_ACC     = 'X'		# "XYZ" [58-5A]
-
+# Register sources/destinations
 REG_CR0           = 'a' & 0x07
 REG_EBX           = 'b' & 0x07
 REG_ECX           = 'c' & 0x07
 REG_EDX           = 'd' & 0x07
-
+# Operation size for in/out/mov
 SIZE_BYTE         = 0x00
 SIZE_WORD         = 0x01
 SIZE_LONG         = 0x02
+# Constants for the baudrate divisor change
+COM_DLL           = 0x00	# Baud Rate Divisor LSB (if DLAB is set)
+COM_DLM           = 0x01	# Baud Rate Divisor MSB (if DLAB is set)
+COM_LCR           = 0x03	# Line Control Register
 
-# Note: the last EAX transfered will be used as RAM/CAR address
 
-
-# Fixes a binutil/ld bug where the address if off by 2 on cross section jumps
-.macro  JMP_XS addr
-.if JMP_WORKAROUND
-	jmp  \addr + 2
-.else
-	jmp  \addr
-.endif
-.endm
-
-# Jump to a subroutine
-.macro  ROM_CALL addr
-	mov  sp, offset 9f	# Use a local label as we don't know the size
-	jmp  \addr		# of the jmp instruction (can be 2 or 3 bytes)
-9:	# see http://sourceware.org/binutils/docs-2.21/as/Symbol-Names.html
-.endm
-.macro  ROM_CALL_XS addr
-	mov  sp, offset 9f
-	JMP_XS \addr
-9:
-.endm
+/********************************************************************************/
+/* console:                                                                     */
+/* process serial input and script commands.                                    */
+/********************************************************************************/
 
 .section console, "ax"
 .globl enter_console
@@ -152,7 +146,7 @@ dump_acc:
 # move 32 bit immediate value to EAX
 move_imm:
 	cmp  al, OP_MOVE_IMM
-	jne  cmd_invd
+	jne  cmd_divisor
 	mov  cl, 0x08
 	xor  ebx, ebx
 0:	shl  ecx, 0x10
@@ -179,6 +173,24 @@ move_imm:
 	dec  cl
 	jne  0b
 4:	movd mm0, ebx		# will be restored into EAX
+	jmp  read_command
+
+# Change the baudrate divisor
+cmd_divisor:
+	cmp  al, OP_DIVISOR
+	jne  cmd_invd
+	mov  dx, COM_BASE + COM_LCR
+	mov  al, 0x80		# Set divisor access
+	out  dx, al
+	mov  dx, COM_BASE + COM_DLL
+	movd eax, mm0
+	out  dx, al
+	inc  dx
+	mov  al, ah
+	out  dx, al
+	mov  dx, COM_BASE + COM_LCR
+	mov  al, 0x03		# Unset divisor access. Set 8N1 mode
+	out  dx, al
 	jmp  read_command
 
 # INVD
@@ -376,6 +388,7 @@ memacc_long:
 	mov  eax, [di]
 0:	jmp  read_command
 
+
 /********************************************************************************/
 /* Subroutines:                                                                 */
 /********************************************************************************/
@@ -394,3 +407,4 @@ read_echo:
 
 prompt_string:
 	.string "s/u/r/q> "
+
