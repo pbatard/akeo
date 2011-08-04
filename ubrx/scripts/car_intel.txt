@@ -1,11 +1,10 @@
-The following UBRX script initializes 4KB of data CAR at location [C0000-C0FFF]
-for an Intel single core/non HT CPU. This can subsequently be used as RAM.
-Paste everything below the starred line to an UBRX console in script mode.
-********************************************************************************
+# The following UBRX script initializes 4KB of data CAR at location [C0000-C0FFF]
+# for an Intel single core/non HT CPU. This can subsequently be used as data RAM.
 
-$60000010 a
-$2ff c $0 d $c00 m
+$60000010 a		# disable cache
+$2ff c $0 d $c00 m	# enable fixed + var MTRRs
 
+# clear all MTRRs (not actually needed after reset)
 $250 c $0 m
 $258 c $0 m
 $259 c $0 m
@@ -34,6 +33,6 @@ $20d c $0 m
 $20e c $0 m
 $20f c $0 m
 
-$268 c $0 d $06 m
-!
-$10 a
+$268 c $0 d $06 m	# Set [C0000-C0FFF] as WB
+! $10 a			# flush and enable cache
+
