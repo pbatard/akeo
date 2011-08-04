@@ -202,4 +202,3 @@ Only once we have successfully identified a 16650 UART do we attempt to fully
 configure it and read the console request key. If multiple UARTs have been
 identified, these will be checked in sequence, meaning that any serial port
 available on the motherboard can be used for console access.
-
